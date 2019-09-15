@@ -40,7 +40,7 @@ class User(AbstractUser):
     USERNAME_FIELD = 'student_id'
     
     def __str__(self):
-        return (self.first_name or "") + " " +  self.last_name
+        return self.last_name + " " + (self.first_name or "")
 
 
 

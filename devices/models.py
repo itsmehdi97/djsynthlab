@@ -39,6 +39,8 @@ class Reservation(models.Model):
     users = models.ManyToManyField(User, db_table='devices_reservation_users', related_name='reservations', blank=True) 
     desc = models.TextField(null=True, blank=True)
     tool = models.ForeignKey(Tool, on_delete=models.CASCADE, related_name='tool_reservations')
+    email_reminder = models.BooleanField(null=True)
+    reminder_task_id = models.CharField(max_length=55, null=True)
     
     @property
     def status(self):

@@ -4,9 +4,11 @@ from django.utils import timezone
 from django.forms import ValidationError
 from django.shortcuts import redirect
 from django.contrib import messages
+from .tasks import send_email
 
+from datetime import timedelta
+from django.utils import timezone
 from jalali_date.admin import ModelAdminJalaliMixin, StackedInlineJalaliMixin, TabularInlineJalaliMixin	
-from datetime import datetime
 
 from .models import  Tool, Reservation, Attr, ToolAttr, ReservationAttr
 from .forms import ReservationForm
@@ -29,12 +31,6 @@ class ToolAttrAdmin(admin.ModelAdmin):
         return {}
 admin.site.register(ToolAttr, ToolAttrAdmin)
 
-
-# class StudentAdmin(admin.ModelAdmin):
-#     fields = ['first_name', 'last_name']
-#     search_fields = ['first_name', 'last_name']
-
-# admin.site.register(Student, StudentAdmin)
 
 class ToolAttrInline(admin.TabularInline):
     model = ToolAttr
@@ -96,7 +92,7 @@ class ReservationAdmin(admin.ModelAdmin):
     form = ReservationForm
     fieldsets = [
         (None, {'fields': ['tool']}),
-        ('DateTime Information', {'fields': ['start', 'end']}),
+        ('DateTime Information', {'fields': ['start', 'end', 'email_reminder']}),
         ('User Information', {'fields': ['users', 'desc']}),
     ]
     search_fields = ['users__first_name', 'users__last_name', 'desc']
@@ -112,6 +108,37 @@ class ReservationAdmin(admin.ModelAdmin):
                 messages.set_level(request, messages.ERROR)
                 messages.error(request, "Each record can only be modified by it's users.")
                 return
+        if change:
+            old_obj = Reservation.objects.get(pk=obj.pk)
+
+            if obj.email_reminder:
+                if old_obj.email_reminder:
+                    if obj.start != old_obj.start or same_users(old_obj, obj):
+                        send_email.AsyncResult(obj.reminder_task_id).revoke()
+                        users = email_users(request)
+                        if users and obj.start-timezone.now() >= timedelta(days=1):
+                            print('yes 3# users')
+                            result = send_email.apply_async((obj.start, obj.end, obj.tool.name, users),
+                                                            eta=obj.start-timedelta(days=1))
+                            obj.reminder_task_id = result.id
+
+                else:
+                    users = email_users(request)
+                    if users and obj.start-timezone.now() >= timedelta(days=1):
+                        result = send_email.apply_async((obj.start, obj.end, obj.tool.name, users),
+                                                        eta=obj.start-timedelta(days=1))
+                        obj.reminder_task_id = result.id
+            else:
+                if old_obj.email_reminder:
+                    send_email.AsyncResult(old_obj.reminder_task_id).revoke()
+
+        else:
+            if obj.email_reminder:
+                users = email_users(request)
+                if users and obj.start-timezone.now() >= timedelta(days=1):
+                    result = send_email.apply_async((obj.start, obj.end, obj.tool.name, users),
+                                                    eta=obj.start-timedelta(days=1))
+                    obj.reminder_task_id = result.id
         return super().save_model(request, obj, form, change)
 
     def delete_model(self, request, obj):
@@ -120,15 +147,18 @@ class ReservationAdmin(admin.ModelAdmin):
                 messages.set_level(request, messages.ERROR)
                 messages.error(request, "Each record can only be modified by it's users.")
                 return
+        if obj.reminder_task_id:
+            send_email.AsyncResult(obj.reminder_task_id).revoke()
         return super().delete_model(request, obj)
 
     def delete_queryset(self, request, queryset):
-        print('INSIDE')
         if request.user.is_superuser:
-            print('IM SUPER')
+            # revoke scheduled tasks
+            for obj in queryset:
+                if obj.reminder_task_id:
+                    send_email.AsyncResult(obj.reminder_task_id).revoke()
             super().delete_queryset(request, queryset)
         else:
-            print('IM NOT SUPER')
             messages.set_level(request, messages.ERROR)
             messages.error(request, "This action has been restricted for you, since you are not a superuser.")  
             return
@@ -142,8 +172,22 @@ class ReservationAdmin(admin.ModelAdmin):
         return super().change_view(request, object_id, form_url=form_url, extra_context=extra_context)
 
 
-    
 admin.site.register(Reservation, ReservationAdmin)
 
 
+def email_users(request):
+    users = request.POST.get('users', None)
+    rec = []
+    if users:
+        for user in users:
+            rec.append(User.objects.get(pk=int(user)).email)
+    return rec
 
+def same_users(old, new):
+    if old.users.count() == new.users.count():
+        for u in new.users.all():
+            if not u in old.users.all():
+                return False
+    else:
+        return False
+    return True
