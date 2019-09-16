@@ -114,10 +114,9 @@ class ReservationAdmin(admin.ModelAdmin):
             if obj.email_reminder:
                 if old_obj.email_reminder:
                     if obj.start != old_obj.start or same_users(old_obj, obj):
-                        send_email.AsyncResult(obj.reminder_task_id).revoke()
+                        send_email.AsyncResult(old_obj.reminder_task_id).revoke()
                         users = email_users(request)
                         if users and obj.start-timezone.now() >= timedelta(days=1):
-                            print('yes 3# users')
                             result = send_email.apply_async((obj.start, obj.end, obj.tool.name, users),
                                                             eta=obj.start-timedelta(days=1))
                             obj.reminder_task_id = result.id
